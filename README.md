@@ -24,7 +24,12 @@ Faithfully reimplements Tesseract's C++ network layers:
 ```bash
 git clone https://github.com/niushuai1991/tesseract-pytorch.git
 cd tesseract-pytorch
+
+# With CUDA (default, requires NVIDIA GPU + CUDA 12.6)
 uv sync
+
+# CPU only
+uv sync --torch-index pytorch-cpu
 ```
 
 ## Quick Start
@@ -40,13 +45,32 @@ text = recognizer.recognize(image)  # PIL Image
 
 ### Training
 
+#### Via CLI
+
+```bash
+# CPU training
+tesseract-pytorch train --traineddata eng.traineddata --train-list train.txt
+
+# GPU training (use CUDA device 0)
+tesseract-pytorch train --traineddata eng.traineddata --train-list train.txt --gpu 0
+
+# Fine-tune on GPU
+tesseract-pytorch fine-tune --continue-from checkpoint.traineddata \
+    --traineddata eng.traineddata --train-list train.txt --gpu 0
+```
+
+#### Via Python API
+
 ```python
+import torch
 from tesseract_cuda.network.model import TessLSTMModel
 from tesseract_cuda.training.trainer import LSTMTrainer
 from tesseract_cuda.training.dataset import LSTMFDataset
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 model = TessLSTMModel.from_spec("[1,0,0,1Lfx16O1c3]", num_classes=3)
-trainer = LSTMTrainer(model, max_iterations=1000)
+trainer = LSTMTrainer(model, device=device, max_iterations=1000)
 
 dataset = LSTMFDataset(["train.lstmf"], unicharset)
 trainer.train(dataset)
