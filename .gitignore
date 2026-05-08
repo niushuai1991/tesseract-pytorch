@@ -1,32 +1,32 @@
-# Python 虚拟环境
+# Python virtual environments
 .venv/
 venv/
 env/
 ENV/
 
-# Python 缓存
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 
-# 测试和覆盖率
+# Test and coverage
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# uv 包管理器
+# uv package manager
 .venv/
 
-# 构建产物
+# Build artifacts
 dist/
 build/
 *.egg-info/
 *.whl
 
-# IDE 和编辑器
+# IDE and editors
 .vscode/
 .idea/
 *.swp
@@ -36,17 +36,18 @@ build/
 .pydevproject
 .settings/
 
-# macOS 系统文件
+# macOS system files
 .DS_Store
 
-# 训练输出和检查点
+# Training output and checkpoints
 output/
 checkpoints/
 *.pt
 *.pth
 *.checkpoint
+*.traineddata
 
-# 日志和临时文件
+# Logs and temp files
 *.log
 *.tmp
 *.tmp.*
@@ -54,5 +55,5 @@ checkpoints/
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# mypy 类型检查
+# mypy cache
 .mypy_cache/
