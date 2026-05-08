@@ -65,17 +65,16 @@ class ConvolveLayer(nn.Module):
 
 
 class MaxpoolLayer(nn.Module):
-    """Tesseract's Maxpool: reduces spatial size by x_scale, y_scale."""
+    """Tesseract's Maxpool: reduces spatial size by x_scale, y_scale without changing depth."""
 
     def __init__(self, ni: int, x_scale: int, y_scale: int):
         super().__init__()
         self.ni = ni
         self.x_scale = x_scale
         self.y_scale = y_scale
-        self.no = ni * x_scale * y_scale
+        self.no = ni
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [height, width, depth] or [batch, h, w, d]
         if x.dim() == 3:
             x = x.unsqueeze(0)
             unsqueezed = True
@@ -85,19 +84,14 @@ class MaxpoolLayer(nn.Module):
         batch, height, width, depth = x.shape
         ys, xs = self.y_scale, self.x_scale
 
-        # Pad to multiples
         new_h = ((height + ys - 1) // ys) * ys
         new_w = ((width + xs - 1) // xs) * xs
         if new_h != height or new_w != width:
             x = F.pad(x, [0, 0, 0, new_w - width, 0, new_h - height])
 
-        # Reshape and take max, then flatten blocks into depth
         x = x.view(batch, new_h // ys, ys, new_w // xs, xs, depth)
         x = x.max(dim=2).values
         x = x.max(dim=3).values
-        # Expand depth by repeating
-        x = x.unsqueeze(-1).expand(-1, -1, -1, -1, xs * ys)
-        x = x.reshape(batch, new_h // ys, new_w // xs, depth * xs * ys)
 
         if unsqueezed:
             x = x.squeeze(0)
@@ -165,17 +159,55 @@ class FullyConnectedLayer(nn.Module):
 
 
 class ReversedLayer(nn.Module):
-    """Reverses input along a dimension, runs sub-network, reverses output."""
+    """Reverses input along a spatial dimension, runs sub-network, reverses output.
 
-    def __init__(self, sub_net: nn.Module, dim: int = 0):
+    dim can be:
+      - "x": reverse along width (dim 1 for 3D, dim 2 for 4D)
+      - "y": reverse along height (dim 0 for 3D, dim 1 for 4D)
+      - int: direct dimension index (backward compatible)
+    """
+
+    def __init__(self, sub_net: nn.Module, dim=0):
         super().__init__()
         self.sub_net = sub_net
         self.dim = dim
 
+    def _get_flip_dim(self, x: torch.Tensor) -> int:
+        if isinstance(self.dim, int):
+            return self.dim
+        if x.dim() == 3:
+            return 0 if self.dim == "y" else 1
+        else:
+            return 1 if self.dim == "y" else 2
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        reversed_x = torch.flip(x, [self.dim])
+        flip_dim = self._get_flip_dim(x)
+        reversed_x = torch.flip(x, [flip_dim])
         out = self.sub_net(reversed_x)
-        return torch.flip(out, [self.dim])
+        return torch.flip(out, [flip_dim])
+
+
+class XYTransposeLayer(nn.Module):
+    """Transposes x and y dimensions, runs sub-network, transposes back.
+
+    In Tesseract, this wraps dim='y' LSTMs so they process columns instead of rows.
+    For 3D [H,W,D]: swaps to [W,H,D], runs sub_net, swaps back.
+    For 4D [B,H,W,D]: swaps to [B,W,H,D], runs sub_net, swaps back.
+    """
+
+    def __init__(self, sub_net: nn.Module):
+        super().__init__()
+        self.sub_net = sub_net
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 3:
+            x = x.permute(1, 0, 2)
+            out = self.sub_net(x)
+            return out.permute(1, 0, 2)
+        else:
+            x = x.permute(0, 2, 1, 3)
+            out = self.sub_net(x)
+            return out.permute(0, 2, 1, 3)
 
 
 class SeriesLayer(nn.Module):
@@ -221,32 +253,45 @@ class LSTMLayer(nn.Module):
             self.cell = TesseractLSTMCell(ni, ns, is_2d)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [height, width, depth] or [batch, h, w, d]
-        # For 1D LSTM along x: treat width as sequence, flatten h*d as features
         if x.dim() == 3:
             height, width, depth = x.shape
-            # Reshape to [width, height*depth] as sequence
-            x = x.permute(1, 0, 2).reshape(width, height * depth)
-            if self.reverse:
-                x = torch.flip(x, [0])
-            out = self.cell.forward_sequence(x)
-            if self.reverse:
-                out = torch.flip(out, [0])
-            if self.summary:
-                # Summary outputs single timestep, expand back
-                out = out.unsqueeze(0).expand(width, -1)
-                return out
-            # out: [width, ns]
-            return out
+            if self.summary and height > 1:
+                out_rows = []
+                for r in range(height):
+                    row = x[r]
+                    if self.reverse:
+                        row = torch.flip(row, [0])
+                    row_out = self.cell.forward_sequence(row)
+                    out_rows.append(row_out.unsqueeze(0))
+                return torch.cat(out_rows, dim=0).unsqueeze(1)
+            else:
+                x_flat = x.reshape(height * width, depth)
+                if self.reverse:
+                    x_flat = torch.flip(x_flat, [0])
+                out = self.cell.forward_sequence(x_flat)
+                if self.reverse:
+                    out = torch.flip(out, [0])
+                if self.summary:
+                    return out.unsqueeze(0).unsqueeze(0)
+                return out.reshape(height, width, self.ns)
         else:
             batch, height, width, depth = x.shape
-            x = x.permute(0, 1, 2, 3).reshape(batch, width, height * depth)
-            if self.reverse:
-                x = torch.flip(x, [1])
-            out = self.cell.forward_sequence(x)
-            if self.reverse:
-                out = torch.flip(out, [1])
-            if self.summary:
-                out = out.unsqueeze(1).expand(-1, width, -1)
-                return out
-            return out
+            if self.summary and height > 1:
+                out_rows = []
+                for r in range(height):
+                    row = x[:, r]
+                    if self.reverse:
+                        row = torch.flip(row, [1])
+                    row_out = self.cell.forward_sequence(row)
+                    out_rows.append(row_out.unsqueeze(1))
+                return torch.cat(out_rows, dim=1).unsqueeze(2)
+            else:
+                x_flat = x.reshape(batch, height * width, depth)
+                if self.reverse:
+                    x_flat = torch.flip(x_flat, [1])
+                out = self.cell.forward_sequence(x_flat)
+                if self.reverse:
+                    out = torch.flip(out, [1])
+                if self.summary:
+                    return out.unsqueeze(1).unsqueeze(1)
+                return out.reshape(batch, height, width, self.ns)

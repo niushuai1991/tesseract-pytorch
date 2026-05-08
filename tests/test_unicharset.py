@@ -7,10 +7,10 @@ from tesseract_cuda.formats.unicharset import Unicharset
 
 SAMPLE_UNICHARSET = """\
 4
-NULL 0 0 1  Common 0 0 0
-a 1 0 1  Latin 0 0 0 a
-b 2 0 1  Latin 0 0 0 b
-c 4 0 1  Latin 0 0 0 c
+NULL 0 Common 0
+a 1 0,255,0,255,0,0,0,0,0,0 Latin 1 0 1 a
+b 2 0,255,0,255,0,0,0,0,0,0 Latin 2 0 2 b
+c 4 0,255,0,255,0,0,0,0,0,0 Latin 3 0 3 c
 """
 
 
@@ -89,7 +89,7 @@ class TestUnicharsetProperties:
     def test_direction_and_mirror(self):
         ucs = Unicharset.from_text(SAMPLE_UNICHARSET)
         assert ucs._entries[1].direction == 0
-        assert ucs._entries[1].mirror == 0
+        assert ucs._entries[1].mirror == 1
 
     def test_normed(self):
         ucs = Unicharset.from_text(SAMPLE_UNICHARSET)

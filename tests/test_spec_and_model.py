@@ -70,6 +70,53 @@ class TestSpecParser:
         assert out.loss_type == "softmax"
         assert out.num_outputs == 5
 
+    def test_reconfig_spec(self):
+        desc = parse_network_spec("[1,0,0,1S3,3Lfx32O1c10]")
+        children = desc.children
+        assert children[1].type == "reconfig"
+        assert children[1].y_scale == 3
+        assert children[1].x_scale == 3
+
+    def test_nested_parallel(self):
+        desc = parse_network_spec("[1,0,0,1(Lfx32Lrx32)Lfx64O1c10]")
+        children = desc.children
+        assert children[1].type == "parallel"
+        assert len(children[1].children) == 2
+        assert children[2].type == "lstm"
+        assert children[2].num_states == 64
+
+    def test_malformed_spec_unknown_char(self):
+        with pytest.raises(ValueError, match="Unexpected char"):
+            parse_network_spec("[1,0,0,1Z10]")
+
+    def test_lstm_summary_spec(self):
+        desc = parse_network_spec("[1,0,0,1Lfys64O1c1]")
+        lstm = desc.children[1]
+        assert lstm.summary is True
+        assert lstm.direction == "forward"
+        assert lstm.dim == "y"
+        assert lstm.num_states == 64
+
+    def test_lstm_reverse_spec(self):
+        desc = parse_network_spec("[1,0,0,1Lrx32O1c1]")
+        lstm = desc.children[1]
+        assert lstm.direction == "reverse"
+        assert lstm.dim == "x"
+
+    def test_conv_relu_activation(self):
+        desc = parse_network_spec("[1,0,0,1Cr3,3,16O1c1]")
+        conv = desc.children[1]
+        assert conv.activation == "relu"
+
+    def test_input_padding(self):
+        desc = parse_network_spec("[1,0]")
+        inp = desc.children[0]
+        assert inp.type == "input"
+        assert inp.batch == 1
+        assert inp.height == 0
+        assert inp.width == 0
+        assert inp.depth == 0
+
 
 class TestModelConstruction:
     def test_build_from_spec(self):
@@ -87,10 +134,8 @@ class TestModelConstruction:
         x = torch.randn(1, 20, 1)
         output = model(x)
 
-        # Output should be [width, num_classes]
-        assert output.dim() == 2
-        assert output.shape[0] == 20  # width preserved
-        assert output.shape[1] == 10  # num_classes
+        assert output.dim() == 3
+        assert output.shape == (1, 20, 10)
 
     def test_export_import_roundtrip(self):
         spec = "[1,0,0,1Lfx16O1c5]"
@@ -148,3 +193,39 @@ class TestModelConstruction:
 
         output = cell.forward_sequence(seq)
         assert output.shape == (3,)  # single output, no batch
+
+
+class TestModelComplexSpecs:
+    def test_build_with_conv_maxpool(self):
+        spec = "[1,0,0,1Ct3,3,16Mp3,3Lfx32O1c10]"
+        model = TessLSTMModel.from_spec(spec, num_classes=10)
+        assert model.network is not None
+        x = torch.randn(1, 20, 1)
+        out = model(x)
+        assert out.dim() == 3
+        assert out.shape[2] == 10
+
+    def test_build_with_parallel(self):
+        spec = "[1,0,0,1(Lfx16Lrx16)Lfx32O1c10]"
+        model = TessLSTMModel.from_spec(spec, num_classes=10)
+        x = torch.randn(1, 10, 1)
+        out = model(x)
+        assert out.dim() == 3
+        assert out.shape[2] == 10
+
+    def test_build_with_reconfig(self):
+        spec = "[1,0,0,1S2,2Lfx32O1c10]"
+        model = TessLSTMModel.from_spec(spec, num_classes=10)
+        x = torch.randn(1, 10, 1)
+        out = model(x)
+        assert out.dim() == 3
+        assert out.shape[2] == 10
+
+    def test_forward_deterministic(self):
+        spec = "[1,0,0,1Lfx32O1c10]"
+        model = TessLSTMModel.from_spec(spec, num_classes=10)
+        model.eval()
+        x = torch.randn(1, 10, 1)
+        out1 = model(x)
+        out2 = model(x)
+        assert torch.allclose(out1, out2)

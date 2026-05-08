@@ -75,14 +75,17 @@ class LSTMTrainer:
                     return
 
                 images, labels, input_lengths, target_lengths = batch
-                images = images.to(self.device)
+                # collate_fn returns [B, 1, H, W]; model expects [B, H, W, D]
+                images = images.permute(0, 2, 3, 1).to(self.device)
                 labels = labels.to(self.device)
 
                 # Forward
                 self.optimizer.zero_grad()
                 output = self.model(images)
 
-                # output shape: [batch, width, num_classes] or [width, num_classes]
+                # output shape: [batch, height, width, num_classes] or [height, width, num_classes]
+                if output.dim() == 4:
+                    output = output.squeeze(1)
                 if output.dim() == 2:
                     output = output.unsqueeze(0)
 

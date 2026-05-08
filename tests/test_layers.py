@@ -56,17 +56,39 @@ class TestMaxpoolLayer:
         out = layer(x)
         assert out.shape[0] == 3
         assert out.shape[1] == 3
-        assert out.shape[2] == 4 * 2 * 2
+        assert out.shape[2] == 4
 
     def test_output_shape_4d(self):
         layer = MaxpoolLayer(ni=2, x_scale=3, y_scale=3)
         x = torch.randn(2, 9, 9, 2)
         out = layer(x)
-        assert out.shape == (2, 3, 3, 2 * 3 * 3)
+        assert out.shape == (2, 3, 3, 2)
 
     def test_no_property(self):
         layer = MaxpoolLayer(ni=8, x_scale=2, y_scale=1)
-        assert layer.no == 8 * 2 * 1
+        assert layer.no == 8
+
+    def test_non_divisible_padding(self):
+        layer = MaxpoolLayer(ni=2, x_scale=3, y_scale=3)
+        x = torch.randn(5, 7, 2)
+        out = layer(x)
+        assert out.shape[0] == 2  # ceil(5/3)
+        assert out.shape[1] == 3  # ceil(7/3)
+        assert out.shape[2] == 2
+
+    def test_1x1_input(self):
+        layer = MaxpoolLayer(ni=4, x_scale=2, y_scale=2)
+        x = torch.randn(1, 1, 4)
+        out = layer(x)
+        assert out.shape == (1, 1, 4)
+
+    def test_gradient_flow(self):
+        layer = MaxpoolLayer(ni=2, x_scale=2, y_scale=2)
+        x = torch.randn(4, 4, 2, requires_grad=True)
+        out = layer(x)
+        loss = out.sum()
+        loss.backward()
+        assert x.grad is not None
 
 
 class TestReconfigLayer:
@@ -83,6 +105,22 @@ class TestReconfigLayer:
         x = torch.randn(2, 4, 4, 2)
         out = layer(x)
         assert out.shape == (2, 2, 2, 2 * 2 * 2)
+
+    def test_non_divisible_padding(self):
+        layer = ReconfigLayer(ni=3, x_scale=2, y_scale=2)
+        x = torch.randn(5, 7, 3)
+        out = layer(x)
+        assert out.shape[0] == 3  # ceil(5/2)
+        assert out.shape[1] == 4  # ceil(7/2)
+        assert out.shape[2] == 3 * 2 * 2
+
+    def test_gradient_flow(self):
+        layer = ReconfigLayer(ni=2, x_scale=2, y_scale=2)
+        x = torch.randn(4, 4, 2, requires_grad=True)
+        out = layer(x)
+        loss = out.sum()
+        loss.backward()
+        assert x.grad is not None
 
 
 class TestFullyConnectedLayer:
@@ -180,25 +218,25 @@ class TestLSTMLayer:
         layer = LSTMLayer(ni=4, ns=8)
         x = torch.randn(1, 10, 4)  # [h=1, w=10, d=4] → input to cell = 1*4=4
         out = layer(x)
-        assert out.shape == (10, 8)
+        assert out.shape == (1, 10, 8)
 
     def test_forward_shape_4d(self):
         layer = LSTMLayer(ni=4, ns=8)
         x = torch.randn(2, 1, 10, 4)  # [b=2, h=1, w=10, d=4]
         out = layer(x)
-        assert out.shape == (2, 10, 8)
+        assert out.shape == (2, 1, 10, 8)
 
     def test_reverse_lstm(self):
         layer = LSTMLayer(ni=4, ns=3, reverse=True)
         x = torch.randn(1, 5, 4)  # [h=1, w=5, d=4]
         out = layer(x)
-        assert out.shape == (5, 3)
+        assert out.shape == (1, 5, 3)
 
     def test_summary_lstm_3d(self):
         layer = LSTMLayer(ni=4, ns=3, summary=True)
         x = torch.randn(1, 10, 4)  # [h=1, w=10, d=4]
         out = layer(x)
-        assert out.shape == (10, 3)
+        assert out.shape == (1, 1, 3)
 
     def test_gradient_flow(self):
         layer = LSTMLayer(ni=4, ns=3)
@@ -207,3 +245,44 @@ class TestLSTMLayer:
         loss = out.sum()
         loss.backward()
         assert x.grad is not None
+
+
+class TestEdgeCases:
+    def test_convolve_1x1_input(self):
+        layer = ConvolveLayer(ni=2, no=4, half_x=1, half_y=1)
+        x = torch.randn(1, 1, 2)
+        out = layer(x)
+        assert out.shape == (1, 1, 4)
+
+    def test_convolve_asymmetric_kernel(self):
+        layer = ConvolveLayer(ni=2, no=4, half_x=0, half_y=1)
+        assert layer.fc.weight.shape == (4, 2 * 3 * 1)
+
+    def test_maxpool_different_scales(self):
+        layer = MaxpoolLayer(ni=3, x_scale=2, y_scale=3)
+        x = torch.randn(6, 6, 3)
+        out = layer(x)
+        assert out.shape == (2, 3, 3)
+
+    def test_parallel_three_nets(self):
+        fc1 = FullyConnectedLayer(ni=4, no=2, activation="linear")
+        fc2 = FullyConnectedLayer(ni=4, no=3, activation="linear")
+        fc3 = FullyConnectedLayer(ni=4, no=5, activation="linear")
+        par = ParallelLayer([fc1, fc2, fc3])
+        x = torch.randn(4)
+        out = par(x)
+        assert out.shape == (10,)
+
+    def test_reversed_dim1(self):
+        sub = FullyConnectedLayer(ni=3, no=2, activation="linear")
+        layer = ReversedLayer(sub, dim=1)
+        x = torch.randn(5, 3)
+        out = layer(x)
+        assert out.shape == (5, 2)
+
+    def test_fc_applied_per_position(self):
+        layer = FullyConnectedLayer(ni=4, no=3, activation="linear")
+        x = torch.randn(10, 4)
+        out_single = layer(x[0])
+        out_all = layer(x)
+        assert torch.allclose(out_all[0], out_single, atol=1e-6)

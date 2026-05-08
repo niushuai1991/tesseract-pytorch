@@ -92,7 +92,29 @@ class WeightMatrix:
                     scales.append(reader.read_double())
                 else:
                     scales.append(reader.read_float())
-            # Skip shaped_w if SIMD
+
+            # Convert int8 weights to float64 using scales
+            # In C++, weight = int8_val / INT8_MAX * scale
+            # We store the converted float64 values
+            INT8_MAX = 127.0
+            weights_float = []
+            idx = 0
+            for i in range(dim1):
+                for j in range(dim2):
+                    if idx < len(data_i):
+                        # Convert signed int8 to float
+                        int8_val = data_i[idx]
+                        if int8_val > 127:
+                            int8_val -= 256  # Convert to signed
+                        scale = scales[i] if i < len(scales) else 1.0
+                        weight = (int8_val / INT8_MAX) * scale
+                        weights_float.append(weight)
+                        idx += 1
+                    else:
+                        weights_float.append(0.0)
+            wm.weights = weights_float
+
+            # Skip shaped_w if SIMD (we don't support it)
         else:
             # Float/double mode
             wm.dim1, wm.dim2, wm.weights = reader.read_2d_double_array()
@@ -130,8 +152,8 @@ class WeightMatrix:
 
 
 def _read_2d_int8_array(reader: TFileReader):
-    dim1 = reader.read_uint32()
-    dim2 = reader.read_uint32()
+    dim1 = reader.read_int32()
+    dim2 = reader.read_int32()
     _empty = reader.read_int8()
     total = dim1 * dim2
     if total == 0:
@@ -166,8 +188,8 @@ class NetworkLayer:
     ns: int = 0
     nf: int = 0
     softmax: Optional["NetworkLayer"] = None
-    # Input
-    input_shape: Optional[tuple[int, int, int, int]] = None
+    # Input: batch, height, width, depth, loss_type
+    input_shape: Optional[tuple[int, int, int, int, int]] = None
     # Plumbing
     learning_rates: list[float] = field(default_factory=list)
 
@@ -274,12 +296,13 @@ def deserialize_network(reader: TFileReader) -> Optional[NetworkLayer]:
         layer.y_scale = reader.read_int32()
 
     elif type_name == "Input":
-        # StaticShape: batch, height, width, depth
+        # StaticShape: batch, height, width, depth, loss_type
         batch = reader.read_int32()
         height = reader.read_int32()
         width = reader.read_int32()
         depth = reader.read_int32()
-        layer.input_shape = (batch, height, width, depth)
+        loss_type = reader.read_int32()
+        layer.input_shape = (batch, height, width, depth, loss_type)
 
     elif type_name in ("Softmax", "SoftmaxNoCTC", "Logistic", "LinLogistic",
                        "LinTanh", "Tanh", "Relu", "Linear",
@@ -331,16 +354,17 @@ def serialize_network(layer: NetworkLayer, writer: TFileWriter,
         writer.write_int32(layer.y_scale)
 
     elif layer.type_name == "Input":
-        # Always write StaticShape (4 int32)
+        # Always write StaticShape (5 int32: batch, height, width, depth, loss_type)
         if layer.input_shape:
             for v in layer.input_shape:
                 writer.write_int32(v)
         else:
-            # Default: batch=1, height=0, width=0, depth=ni
+            # Default: batch=1, height=0, width=0, depth=ni, loss_type=0
             writer.write_int32(1)
             writer.write_int32(0)
             writer.write_int32(0)
             writer.write_int32(layer.ni)
+            writer.write_int32(0)
 
     elif layer.type_name in ("Softmax", "SoftmaxNoCTC", "Logistic", "LinLogistic",
                              "LinTanh", "Tanh", "Relu", "Linear"):

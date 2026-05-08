@@ -13,7 +13,8 @@ from ..formats.tfile import TFileReader, TFileWriter
 from .spec_parser import parse_network_spec, LayerDesc
 from .layers import (
     InputLayer, ConvolveLayer, MaxpoolLayer, ReconfigLayer,
-    FullyConnectedLayer, ReversedLayer, SeriesLayer, ParallelLayer, LSTMLayer,
+    FullyConnectedLayer, ReversedLayer, XYTransposeLayer,
+    SeriesLayer, ParallelLayer, LSTMLayer,
 )
 from .weight_mapper import load_weights_to_model, extract_weights_from_model
 
@@ -111,7 +112,7 @@ def _build_series_children(children: list[LayerDesc], num_classes: int) -> Serie
         elif child.type == "maxpool":
             layer = MaxpoolLayer(ni, child.x_scale, child.y_scale)
             layers.append(layer)
-            ni = ni * child.x_scale * child.y_scale
+            # Maxpool does NOT change depth (unlike Reconfig)
 
         elif child.type == "reconfig":
             layer = ReconfigLayer(ni, child.x_scale, child.y_scale)
@@ -119,13 +120,34 @@ def _build_series_children(children: list[LayerDesc], num_classes: int) -> Serie
             ni = ni * child.x_scale * child.y_scale
 
         elif child.type == "lstm":
-            layer = LSTMLayer(
-                ni=ni, ns=child.num_states,
-                summary=child.summary,
-                reverse=(child.direction == "reverse"),
-            )
+            is_reverse = child.direction == "reverse"
+            is_bidi = child.direction == "bidirectional"
+            dim_y = child.dim == "y"
+
+            if is_bidi:
+                fwd = LSTMLayer(
+                    ni=ni, ns=child.num_states,
+                    summary=child.summary, reverse=False,
+                )
+                rev = LSTMLayer(
+                    ni=ni, ns=child.num_states,
+                    summary=child.summary, reverse=True,
+                )
+                layer = ParallelLayer([fwd, rev])
+                ni = child.num_states * 2
+            else:
+                lstm = LSTMLayer(
+                    ni=ni, ns=child.num_states,
+                    summary=child.summary,
+                    reverse=is_reverse,
+                )
+                if is_reverse:
+                    lstm = ReversedLayer(lstm, dim="x")
+                if dim_y:
+                    lstm = XYTransposeLayer(lstm)
+                layer = lstm
+                ni = child.num_states
             layers.append(layer)
-            ni = child.num_states
 
         elif child.type == "fc":
             layer = FullyConnectedLayer(ni, child.num_outputs, child.activation)
@@ -133,7 +155,9 @@ def _build_series_children(children: list[LayerDesc], num_classes: int) -> Serie
             ni = child.num_outputs
 
         elif child.type == "output":
-            n = child.num_outputs if child.num_outputs > 0 else num_classes
+            n = num_classes if num_classes > 0 else child.num_outputs
+            if n <= 0:
+                n = child.num_outputs
             act = "logistic" if child.loss_type == "logistic" else "softmax"
             layer = FullyConnectedLayer(ni, n, act)
             layers.append(layer)
@@ -144,7 +168,7 @@ def _build_series_children(children: list[LayerDesc], num_classes: int) -> Serie
             layers.append(layer)
 
         elif child.type == "parallel":
-            layer = _build_parallel(child.children or [], num_classes)
+            layer = _build_parallel(child.children or [], num_classes, ni)
             layers.append(layer)
             # Parallel adds depths
             ni = sum(_get_output_size(n) for n in layer.nets)
@@ -155,20 +179,23 @@ def _build_series_children(children: list[LayerDesc], num_classes: int) -> Serie
     return SeriesLayer(layers)
 
 
-def _build_parallel(children: list[LayerDesc], num_classes: int) -> ParallelLayer:
+def _build_parallel(children: list[LayerDesc], num_classes: int, ni: int = 0) -> ParallelLayer:
     """Build a ParallelLayer from children."""
     nets = []
     for child in children:
         if child.type == "series" and child.children:
             nets.append(_build_series_children(child.children, num_classes))
         elif child.type == "lstm":
-            # Standalone LSTM in parallel - need to determine ni from context
-            # For parallel, all inputs must match
-            nets.append(LSTMLayer(
-                ni=0, ns=child.num_states,
+            lstm = LSTMLayer(
+                ni=ni, ns=child.num_states,
                 summary=child.summary,
                 reverse=(child.direction == "reverse"),
-            ))
+            )
+            if child.direction == "reverse":
+                lstm = ReversedLayer(lstm, dim="x")
+            if child.dim == "y":
+                lstm = XYTransposeLayer(lstm)
+            nets.append(lstm)
         else:
             raise ValueError(f"Unsupported parallel child: {child.type}")
     return ParallelLayer(nets)
@@ -186,6 +213,10 @@ def _get_output_size(module: nn.Module) -> int:
         return module.no
     if isinstance(module, ReconfigLayer):
         return module.no
+    if isinstance(module, ReversedLayer):
+        return _get_output_size(module.sub_net)
+    if isinstance(module, XYTransposeLayer):
+        return _get_output_size(module.sub_net)
     return 0
 
 

@@ -54,7 +54,5 @@ checkpoints/
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# mypy/pyright 类型检查
-.pyright_cache/
+# mypy 类型检查
 .mypy_cache/
-.ruff_cache/

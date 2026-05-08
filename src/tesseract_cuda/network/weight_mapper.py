@@ -13,7 +13,7 @@ from ..formats.network_ser import (
 from .layers import (
     TesseractLSTMCell, LSTMLayer, FullyConnectedLayer,
     ConvolveLayer, MaxpoolLayer, ReconfigLayer,
-    SeriesLayer, ParallelLayer, ReversedLayer, InputLayer,
+    SeriesLayer, ParallelLayer, ReversedLayer, XYTransposeLayer, InputLayer,
 )
 
 
@@ -27,6 +27,12 @@ def load_weights_to_model(network_layer: NetworkLayer, model: nn.Module) -> None
 
 def _load_recursive(nl: NetworkLayer, module: nn.Module) -> None:
     if isinstance(module, SeriesLayer):
+        if len(module.layers) > 0 and isinstance(module.layers[0], ConvolveLayer):
+            if (len(nl.children) == 2
+                    and nl.children[0].type_name == "Convolve"
+                    and nl.children[1].type_name == "Tanh"):
+                _load_recursive(nl.children[1], module.layers[0])
+                return
         for i, child_module in enumerate(module.layers):
             if i < len(nl.children):
                 _load_recursive(nl.children[i], child_module)
@@ -37,6 +43,10 @@ def _load_recursive(nl: NetworkLayer, module: nn.Module) -> None:
                 _load_recursive(nl.children[i], child_module)
 
     elif isinstance(module, ReversedLayer):
+        if nl.children:
+            _load_recursive(nl.children[0], module.sub_net)
+
+    elif isinstance(module, XYTransposeLayer):
         if nl.children:
             _load_recursive(nl.children[0], module.sub_net)
 
@@ -120,11 +130,22 @@ def _extract_recursive(module: nn.Module) -> NetworkLayer:
 
     elif isinstance(module, ReversedLayer):
         child = _extract_recursive(module.sub_net)
+        type_name = "RTLReversed"
         return NetworkLayer(
-            type_id=TYPE_NAME_TO_ID["RTLReversed"], type_name="RTLReversed",
+            type_id=TYPE_NAME_TO_ID[type_name], type_name=type_name,
             training=0, needs_backprop=False, network_flags=0,
             ni=child.ni, no=child.no, num_weights=child.num_weights,
-            name="RTLReversed", children=[child],
+            name=type_name, children=[child],
+        )
+
+    elif isinstance(module, XYTransposeLayer):
+        child = _extract_recursive(module.sub_net)
+        type_name = "XYTranspose"
+        return NetworkLayer(
+            type_id=TYPE_NAME_TO_ID[type_name], type_name=type_name,
+            training=0, needs_backprop=False, network_flags=0,
+            ni=child.ni, no=child.no, num_weights=child.num_weights,
+            name=type_name, children=[child],
         )
 
     elif isinstance(module, LSTMLayer):
