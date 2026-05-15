@@ -1,0 +1,15 @@
+pngs/000.png    :27:
+pngs/001.png    :40A:
+pngs/002.png    :20:
+pngs/003.png    :31C:
+pngs/004.png    :40E:
+pngs/005.png    :31D:
+pngs/006.png    :50:
+pngs/007.png    :59:
+pngs/008.png    :32B:
+pngs/009.png    :39A:
+pngs/010.png    :41D:
+pngs/011.png    :43P:
+pngs/012.png    :43T:
+pngs/013.png    :44E:
+pngs/014.png    :USD

@@ -62,6 +62,15 @@ def main():
     inspect_parser = subparsers.add_parser("inspect", help="Inspect traineddata file")
     inspect_parser.add_argument("path", help="Path to traineddata file")
 
+    # Make-lstmf command
+    lstmf_parser = subparsers.add_parser("make-lstmf", help="Convert images to .lstmf format")
+    lstmf_parser.add_argument("--image", help="Single image file")
+    lstmf_parser.add_argument("--text", help="Text transcription for the image")
+    lstmf_parser.add_argument("--output", help="Output .lstmf file path")
+    lstmf_parser.add_argument("--input", help="Input file with lines: image_path<TAB>text")
+    lstmf_parser.add_argument("--output-dir", default=".", help="Output directory for .lstmf files")
+    lstmf_parser.add_argument("--language", default="eng", help="Language code (default: eng)")
+
     args = parser.parse_args()
 
     if args.command == "train":
@@ -72,6 +81,8 @@ def main():
         _cmd_export(args)
     elif args.command == "inspect":
         _cmd_inspect(args)
+    elif args.command == "make-lstmf":
+        _cmd_makelstmf(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -214,6 +225,87 @@ def _cmd_inspect(args):
     print(f"Components ({len(components)}):")
     for idx, name, size in components:
         print(f"  [{idx:2d}] {name:20s} {size:>10d} bytes")
+
+
+def _cmd_makelstmf(args):
+    import os
+    from io import BytesIO
+    from PIL import Image as PILImage
+    from .formats.tfile import TFileWriter
+    from .formats.lstmf import ImageData
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.input:
+        _makelstmf_from_file(args.input, args.output_dir, args.language)
+    elif args.image and args.text and args.output:
+        _makelstmf_single(args.image, args.text, args.output, args.language)
+    else:
+        print("Error: either --image/--text/--output or --input required")
+        sys.exit(1)
+
+
+def _makelstmf_single(image_path: str, text: str, output_path: str, language: str):
+    import os
+    from io import BytesIO
+    from PIL import Image as PILImage
+    from .formats.lstmf import ImageData
+    from .formats.tfile import TFileWriter
+    img = PILImage.open(image_path).convert("L")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
+
+    basename = os.path.basename(image_path)
+
+    page = ImageData(
+        imagefilename=basename,
+        page_number=0,
+        image_data=image_bytes,
+        language=language,
+        transcription=text,
+        boxes=[],
+        box_texts=[],
+        vertical_text=False,
+    )
+
+    _write_lstmf([page], output_path)
+    print(f"Created: {output_path}")
+
+
+def _makelstmf_from_file(input_path: str, output_dir: str, language: str):
+    import os
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                print(f"Skipping invalid line: {line}")
+                continue
+            image_path, text = parts
+            basename = os.path.splitext(os.path.basename(image_path))[0]
+            output_path = os.path.join(output_dir, f"{basename}.lstmf")
+            _makelstmf_single(image_path, text, output_path, language)
+
+
+def _write_lstmf(pages, output_path: str):
+    from .formats.tfile import TFileWriter
+    writer = TFileWriter()
+    writer.write_uint32(len(pages))
+    for page in pages:
+        writer.write_uint8(1)
+        writer.write_string(page.imagefilename)
+        writer.write_int32(page.page_number)
+        writer.write_bytes_vector(page.image_data)
+        writer.write_string(page.language)
+        writer.write_string(page.transcription)
+        writer.write_uint32(len(page.boxes))
+        writer.write_uint32(len(page.box_texts))
+        writer.write_int8(1 if page.vertical_text else 0)
+    with open(output_path, "wb") as f:
+        f.write(writer.get_bytes())
 
 
 if __name__ == "__main__":

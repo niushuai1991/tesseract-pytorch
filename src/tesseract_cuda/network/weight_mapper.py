@@ -18,11 +18,12 @@ from .layers import (
 
 
 def load_weights_to_model(network_layer: NetworkLayer, model: nn.Module) -> None:
-    """Load weights from a deserialized Tesseract NetworkLayer into a PyTorch model.
-
-    Recursively traverses the network tree and copies weights.
-    """
     _load_recursive(network_layer, model)
+
+
+def extract_weights_from_model(model: nn.Module,
+                               preserved_convs: list | None = None) -> NetworkLayer:
+    return _extract_recursive(model, preserved_convs or [])
 
 
 def _load_recursive(nl: NetworkLayer, module: nn.Module) -> None:
@@ -64,7 +65,6 @@ def _load_recursive(nl: NetworkLayer, module: nn.Module) -> None:
 
 
 def _load_lstm_weights(nl: NetworkLayer, cell: TesseractLSTMCell) -> None:
-    """Load LSTM gate weights from Tesseract format."""
     gates: list[nn.Linear] = [cell.gate_ci, cell.gate_gi, cell.gate_gf1, cell.gate_go]
     if cell.is_2d:
         gates.append(cell.gate_gfs)
@@ -73,39 +73,21 @@ def _load_lstm_weights(nl: NetworkLayer, cell: TesseractLSTMCell) -> None:
         if i < len(nl.weights):
             _load_fc_weight(nl.weights[i], gate)
 
-    # Handle internal softmax sub-network
     if nl.softmax is not None and hasattr(cell, 'softmax') and cell.softmax is not None:
         _load_recursive(nl.softmax, cell.softmax)
 
 
 def _load_fc_weight(wm: WeightMatrix, linear: nn.Linear) -> None:
-    """Load a Tesseract WeightMatrix into a PyTorch nn.Linear layer.
-
-    Tesseract stores weights as [no, ni+1] (last column is bias).
-    PyTorch nn.Linear stores weight as [no, ni] and bias as [no].
-    """
     weights = np.array(wm.weights, dtype=np.float64).reshape(wm.dim1, wm.dim2)
-
-    # All columns except last -> weight
     w = torch.as_tensor(weights[:, :-1].astype(np.float32))
-    # Last column -> bias
     b = torch.as_tensor(weights[:, -1].astype(np.float32))
-
     linear.weight.data.copy_(w)
     linear.bias.data.copy_(b)
 
 
-def extract_weights_from_model(model: nn.Module, spec_str: str = "") -> NetworkLayer:
-    """Extract weights from a PyTorch model into a NetworkLayer tree.
-
-    This is the inverse of load_weights_to_model.
-    """
-    return _extract_recursive(model)
-
-
-def _extract_recursive(module: nn.Module) -> NetworkLayer:
+def _extract_recursive(module: nn.Module, preserved_convs: list) -> NetworkLayer:
     if isinstance(module, SeriesLayer):
-        children = [_extract_recursive(m) for m in module.layers]
+        children = [_extract_recursive(m, preserved_convs) for m in module.layers]
         ni = children[0].ni if children else 0
         no = children[-1].no if children else 0
         nw = sum(c.num_weights for c in children)
@@ -117,7 +99,7 @@ def _extract_recursive(module: nn.Module) -> NetworkLayer:
         )
 
     elif isinstance(module, ParallelLayer):
-        children = [_extract_recursive(m) for m in module.nets]
+        children = [_extract_recursive(m, preserved_convs) for m in module.nets]
         ni = children[0].ni if children else 0
         no = sum(c.no for c in children)
         nw = sum(c.num_weights for c in children)
@@ -129,23 +111,21 @@ def _extract_recursive(module: nn.Module) -> NetworkLayer:
         )
 
     elif isinstance(module, ReversedLayer):
-        child = _extract_recursive(module.sub_net)
-        type_name = "RTLReversed"
+        child = _extract_recursive(module.sub_net, preserved_convs)
         return NetworkLayer(
-            type_id=TYPE_NAME_TO_ID[type_name], type_name=type_name,
+            type_id=TYPE_NAME_TO_ID["RTLReversed"], type_name="RTLReversed",
             training=0, needs_backprop=False, network_flags=0,
             ni=child.ni, no=child.no, num_weights=child.num_weights,
-            name=type_name, children=[child],
+            name="RTLReversed", children=[child],
         )
 
     elif isinstance(module, XYTransposeLayer):
-        child = _extract_recursive(module.sub_net)
-        type_name = "XYTranspose"
+        child = _extract_recursive(module.sub_net, preserved_convs)
         return NetworkLayer(
-            type_id=TYPE_NAME_TO_ID[type_name], type_name=type_name,
+            type_id=TYPE_NAME_TO_ID["XYTranspose"], type_name="XYTranspose",
             training=0, needs_backprop=False, network_flags=0,
             ni=child.ni, no=child.no, num_weights=child.num_weights,
-            name=type_name, children=[child],
+            name="XYTranspose", children=[child],
         )
 
     elif isinstance(module, LSTMLayer):
@@ -164,12 +144,42 @@ def _extract_recursive(module: nn.Module) -> NetworkLayer:
 
     elif isinstance(module, ConvolveLayer):
         wm = _extract_fc_weight(module.fc)
-        return NetworkLayer(
+        kernel_h = 2 * module.half_y + 1
+        kernel_w = 2 * module.half_x + 1
+        conv_no = module.ni * kernel_h * kernel_w
+        conv_wm = None
+        for pc in preserved_convs:
+            if pc.type_name == "Convolve" and pc.ni == module.ni and pc.half_x == module.half_x:
+                conv_wm = pc.weights[0] if pc.weights else None
+                break
+        if conv_wm is None:
+            conv_wm = WeightMatrix(
+                dim1=conv_no, dim2=conv_no + 1,
+                weights=[0.0] * (conv_no * (conv_no + 1)),
+            )
+        conv_nl = NetworkLayer(
             type_id=TYPE_NAME_TO_ID["Convolve"], type_name="Convolve",
             training=0, needs_backprop=False, network_flags=0,
+            ni=module.ni, no=conv_no,
+            num_weights=conv_wm.dim1 * conv_wm.dim2, name="Convolve",
+            weights=[conv_wm],
+            half_x=module.half_x, half_y=module.half_y,
+        )
+        act_name = {"tanh": "Tanh", "relu": "Relu", "sigmoid": "Logistic"}.get(
+            module.activation, "Tanh")
+        act_nl = NetworkLayer(
+            type_id=TYPE_NAME_TO_ID.get(act_name, 22), type_name=act_name,
+            training=0, needs_backprop=False, network_flags=0,
+            ni=conv_no, no=module.no,
+            num_weights=wm.dim1 * wm.dim2, name=act_name,
+            weights=[wm],
+        )
+        return NetworkLayer(
+            type_id=TYPE_NAME_TO_ID["Series"], type_name="Series",
+            training=0, needs_backprop=False, network_flags=0,
             ni=module.ni, no=module.no,
-            num_weights=wm.dim1 * wm.dim2, name="Convolve",
-            weights=[wm], half_x=module.half_x, half_y=module.half_y,
+            num_weights=conv_nl.num_weights + act_nl.num_weights, name="Series",
+            children=[conv_nl, act_nl],
         )
 
     elif isinstance(module, MaxpoolLayer):
@@ -222,13 +232,8 @@ def _extract_lstm(module: LSTMLayer) -> NetworkLayer:
 
 
 def _extract_fc_weight(linear: nn.Linear) -> WeightMatrix:
-    """Extract weights from nn.Linear into Tesseract WeightMatrix format.
-
-    PyTorch: weight [no, ni], bias [no]
-    Tesseract: combined [no, ni+1] (last column = bias)
-    """
-    w = linear.weight.data.numpy()
-    b = linear.bias.data.numpy().reshape(-1, 1)
+    w = linear.weight.data.cpu().numpy()
+    b = linear.bias.data.cpu().numpy().reshape(-1, 1)
     combined = np.concatenate([w, b], axis=1)
     return WeightMatrix(
         dim1=combined.shape[0],

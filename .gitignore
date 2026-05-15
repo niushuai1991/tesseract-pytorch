@@ -1,3 +1,11 @@
+
+.opencode
+
+# Image
+pngs/
+tifs/
+
+
 # Python virtual environments
 .venv/
 venv/

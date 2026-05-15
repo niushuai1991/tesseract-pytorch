@@ -49,6 +49,8 @@ class LSTMTrainer:
         self.training_iteration = 0
         self.sample_iteration = 0
         self.best_error = float("inf")
+        self.last_print_time = time.time()
+        self.last_print_iteration = 0
 
     def train(
         self,
@@ -75,6 +77,7 @@ class LSTMTrainer:
                     return
 
                 images, labels, input_lengths, target_lengths = batch
+
                 # collate_fn returns [B, 1, H, W]; model expects [B, H, W, D]
                 images = images.permute(0, 2, 3, 1).to(self.device)
                 labels = labels.to(self.device)
@@ -94,10 +97,16 @@ class LSTMTrainer:
 
                 # Compute CTC loss
                 batch_size = log_probs.shape[1]
+                seq_len = log_probs.shape[0]
+
+                # Use model output seq_len instead of input image width
+                # The model reduces width due to pooling/stride
+                actual_input_lengths = torch.full((batch_size,), seq_len, dtype=torch.long, device=self.device)
+
                 loss = self.criterion(
                     log_probs,
                     labels,
-                    input_lengths.to(self.device),
+                    actual_input_lengths,
                     target_lengths.to(self.device),
                 )
 

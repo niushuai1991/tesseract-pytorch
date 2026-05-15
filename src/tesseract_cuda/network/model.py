@@ -28,6 +28,8 @@ class TessLSTMModel(nn.Module):
         self.network_str: str = ""
         self.null_char: int = 0
         self.training_flags: int = 0
+        self.input_shape: Optional[tuple[int, int, int, int, int]] = None
+        self._preserved_conv_layers: list = []
 
     @classmethod
     def from_spec(cls, spec: str, num_classes: int) -> "TessLSTMModel":
@@ -52,6 +54,13 @@ class TessLSTMModel(nn.Module):
         model.null_char = lstm_model.null_char
         model.training_flags = lstm_model.training_flags
 
+        if lstm_model.network.children:
+            first = lstm_model.network.children[0]
+            if first.type_name == "Input" and first.input_shape:
+                model.input_shape = first.input_shape
+
+        model._preserved_conv_layers = _collect_preserved_convs(lstm_model.network)
+
         desc = parse_network_spec(lstm_model.network_str)
         model.network = _build_series(desc, lstm_model.network.no)
         load_weights_to_model(lstm_model.network, model.network)
@@ -62,8 +71,16 @@ class TessLSTMModel(nn.Module):
 
     def export_lstm_component(self, training_iteration: int = 0,
                               sample_iteration: int = 0) -> bytes:
-        nl = extract_weights_from_model(self.network)
+        nl = extract_weights_from_model(self.network, preserved_convs=self._preserved_conv_layers)
         nl.num_weights = _count_all_weights(nl)
+
+        if self.input_shape and nl.children:
+            input_nl = nl.children[0]
+            if input_nl.type_name == "Input":
+                input_nl.ni = self.input_shape[1]
+                input_nl.no = self.input_shape[3]
+                input_nl.input_shape = self.input_shape
+                nl.ni = self.input_shape[1]
 
         lstm_model = LSTMModel(
             network=nl,
@@ -229,3 +246,16 @@ def _count_all_weights(nl: NetworkLayerSer) -> int:
     if nl.softmax:
         total += _count_all_weights(nl.softmax)
     return total
+
+
+def _collect_preserved_convs(nl: NetworkLayerSer) -> list:
+    result = []
+    if nl.type_name == "Series" and len(nl.children) == 2:
+        c0, c1 = nl.children
+        if c0.type_name == "Convolve" and c1.type_name in ("Tanh", "Sigmoid", "Relu", "Linear"):
+            result.append(c0)
+    for child in nl.children:
+        result.extend(_collect_preserved_convs(child))
+    if nl.softmax:
+        result.extend(_collect_preserved_convs(nl.softmax))
+    return result
