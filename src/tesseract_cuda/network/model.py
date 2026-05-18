@@ -148,15 +148,16 @@ def _build_series_children(children: list[LayerDesc], num_classes: int) -> Serie
                 )
                 rev = LSTMLayer(
                     ni=ni, ns=child.num_states,
-                    summary=child.summary, reverse=True,
+                    summary=child.summary, reverse=False,
                 )
+                rev = ReversedLayer(rev, dim="x")
                 layer = ParallelLayer([fwd, rev])
                 ni = child.num_states * 2
             else:
                 lstm = LSTMLayer(
                     ni=ni, ns=child.num_states,
                     summary=child.summary,
-                    reverse=is_reverse,
+                    reverse=False,
                 )
                 if is_reverse:
                     lstm = ReversedLayer(lstm, dim="x")
@@ -206,7 +207,7 @@ def _build_parallel(children: list[LayerDesc], num_classes: int, ni: int = 0) ->
             lstm = LSTMLayer(
                 ni=ni, ns=child.num_states,
                 summary=child.summary,
-                reverse=(child.direction == "reverse"),
+                reverse=False,
             )
             if child.direction == "reverse":
                 lstm = ReversedLayer(lstm, dim="x")

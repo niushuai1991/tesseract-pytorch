@@ -60,7 +60,7 @@ class TestExtractSeriesModel:
             FullyConnectedLayer(4, 8, "tanh"),
             FullyConnectedLayer(8, 3, "softmax"),
         ])
-        nl = _extract_recursive(model)
+        nl = _extract_recursive(model, [])
         assert nl.type_name == "Series"
         assert len(nl.children) == 3
         assert nl.children[0].type_name == "Input"
@@ -72,7 +72,7 @@ class TestExtractSeriesModel:
             InputLayer(4, 4),
             FullyConnectedLayer(4, 8, "tanh"),
         ])
-        nl = _extract_recursive(model)
+        nl = _extract_recursive(model, [])
         fc_child = nl.children[1]
         assert len(fc_child.weights) == 1
         assert fc_child.weights[0].dim1 == 8

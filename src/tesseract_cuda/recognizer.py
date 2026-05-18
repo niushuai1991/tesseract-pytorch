@@ -2,8 +2,8 @@ import torch
 import numpy as np
 from PIL import Image
 from .network.model import TessLSTMModel
-from .formats.tessdata import TessdataManager, TESSDATA_LSTM, TESSDATA_LSTM_UNICHARSET, TESSDATA_LSTM_RECODER
-from .formats.tfile import TFileReader
+from .formats.tessdata import TessdataManager, TESSDATA_LSTM, TESSDATA_LSTM_UNICHARSET, TESSDATA_LSTM_RECODER, TESSDATA_UNICHARSET
+from .training.dataset import compute_black_white
 from .formats.unicharset import Unicharset
 from .formats.recoder import Recoder
 
@@ -39,11 +39,8 @@ class TesseractRecognizer:
         image = image.resize((new_w, target_height), Image.LANCZOS)
 
         pixels = np.array(image, dtype=np.float32)
-
-        black = float(np.percentile(pixels, 5))
-        white = float(np.percentile(pixels, 95))
+        black, white = compute_black_white(pixels)
         contrast = max((white - black) / 2.0, 1.0)
-
         normalized = (pixels - black) / contrast - 1.0
         normalized = np.clip(normalized, -1.0, 1.0)
 

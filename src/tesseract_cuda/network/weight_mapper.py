@@ -28,15 +28,14 @@ def extract_weights_from_model(model: nn.Module,
 
 def _load_recursive(nl: NetworkLayer, module: nn.Module) -> None:
     if isinstance(module, SeriesLayer):
-        if len(module.layers) > 0 and isinstance(module.layers[0], ConvolveLayer):
-            if (len(nl.children) == 2
-                    and nl.children[0].type_name == "Convolve"
-                    and nl.children[1].type_name == "Tanh"):
-                _load_recursive(nl.children[1], module.layers[0])
-                return
         for i, child_module in enumerate(module.layers):
-            if i < len(nl.children):
-                _load_recursive(nl.children[i], child_module)
+            if i >= len(nl.children):
+                continue
+            child_nl = nl.children[i]
+            if isinstance(child_module, ConvolveLayer):
+                if _try_load_convolve(child_nl, child_module):
+                    continue
+            _load_recursive(child_nl, child_module)
 
     elif isinstance(module, ParallelLayer):
         for i, child_module in enumerate(module.nets):
@@ -62,6 +61,20 @@ def _load_recursive(nl: NetworkLayer, module: nn.Module) -> None:
     elif isinstance(module, ConvolveLayer):
         if nl.weights:
             _load_fc_weight(nl.weights[0], module.fc)
+
+
+def _try_load_convolve(nl: NetworkLayer, module: ConvolveLayer) -> bool:
+    if nl.type_name == "Series" and len(nl.children) == 2:
+        c0, c1 = nl.children
+        if (c0.type_name == "Convolve"
+                and c1.type_name in ("Tanh", "Sigmoid", "Relu", "Linear", "Logistic")
+                and c1.weights):
+            _load_fc_weight(c1.weights[0], module.fc)
+            return True
+    if nl.type_name == "Convolve" and nl.weights:
+        _load_fc_weight(nl.weights[0], module.fc)
+        return True
+    return False
 
 
 def _load_lstm_weights(nl: NetworkLayer, cell: TesseractLSTMCell) -> None:
