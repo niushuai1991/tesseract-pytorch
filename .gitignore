@@ -54,6 +54,9 @@ checkpoints/
 *.pth
 *.checkpoint
 *.traineddata
+lstmf_list.txt
+lstmf/
+
 
 # Logs and temp files
 *.log
